@@ -1,0 +1,15 @@
+{
+  "name": "pet-care-app",
+  "version": "1.0.0",
+  "description": "Pet Care backend API built with Node.js, Express, and SQLite",
+  "private": true,
+  "scripts": {
+    "dev:backend": "npm run dev --prefix backend",
+    "dev:frontend": "npm run dev --prefix frontend",
+    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "start": "concurrently \"npm start --prefix backend\" \"npm run dev --prefix frontend\""
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.4"
+  }
+}
