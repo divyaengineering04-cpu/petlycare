@@ -1,20 +1,16 @@
-```json
 {
   "name": "pet-care-backend",
   "version": "1.0.0",
   "description": "REST API backend for Pet Care application",
   "main": "server.js",
   "type": "module",
-
   "engines": {
-  "node": "20.19.0"
-}
-
+    "node": "20.19.0"
+  },
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js"
   },
-
   "dependencies": {
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
@@ -23,10 +19,9 @@
     "jsonwebtoken": "^9.0.2",
     "nodemailer": "^9.0.6",
     "pg": "^8.13.1",
-    "sqlite3": "^6.0.1",
+    "sqlite3": "^5.1.7",
     "swagger-jsdoc": "^6.3.0",
     "swagger-ui-express": "^5.0.1",
     "yaml": "^2.9.0"
   }
 }
-```
