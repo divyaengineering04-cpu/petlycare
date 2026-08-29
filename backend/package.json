@@ -1,13 +1,20 @@
+```json
 {
   "name": "pet-care-backend",
   "version": "1.0.0",
   "description": "REST API backend for Pet Care application",
   "main": "server.js",
   "type": "module",
+
+  "engines": {
+    "node": "20.x"
+  },
+
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js"
   },
+
   "dependencies": {
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
@@ -22,3 +29,4 @@
     "yaml": "^2.9.0"
   }
 }
+```
