@@ -19,7 +19,6 @@
     "jsonwebtoken": "^9.0.2",
     "nodemailer": "^9.0.6",
     "pg": "^8.13.1",
-    "sqlite3": "^5.1.7",
     "swagger-jsdoc": "^6.3.0",
     "swagger-ui-express": "^5.0.1",
     "yaml": "^2.9.0"

@@ -1,46 +1,21 @@
 import pg from 'pg';
-import sqlite3 from 'sqlite3';
-import path from 'path';
-import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 
 dotenv.config();
 
 const { Pool } = pg;
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const dbPath = path.resolve(__dirname, '..', process.env.DB_FILE || 'petcare.db');
 
-const getSanitizedUrl = (urlStr) => {
-  if (!urlStr) return '';
-  let cleaned = urlStr.replace(/^["']|["']$/g, '').trim();
-  if (cleaned.includes('[') || cleaned.includes(']')) {
-    cleaned = cleaned.replace(/\[/g, '%5B').replace(/\]/g, '%5D');
-  }
-  return cleaned;
-};
-
-const isPlaceholderUrl = (urlStr) => {
-  if (!urlStr) return true;
-  return (
-    urlStr.includes('[YOUR') ||
-    urlStr.includes('YOUR-PROJECT') ||
-    urlStr.includes('YOUR-PASSWORD') ||
-    urlStr.includes('YOUR-REGION')
-  );
-};
-
-let usePostgres = false;
 let pool = null;
-let sqliteDb = null;
 
-// Convert SQLite '?' positional parameter placeholders to Postgres '$1', '$2', etc.
+// Convert SQLite-style ? placeholders to PostgreSQL $1, $2, $3...
 const convertPlaceholders = (sql) => {
   let index = 1;
   return sql.replace(/\?/g, () => `$${index++}`);
 };
 
-// Map lowercase column keys returned by PostgreSQL to camelCase keys expected by application
+// PostgreSQL returns column names exactly as defined when quoted,
+// but unquoted camelCase names become lowercase.
+// Map them back to the names expected by the application.
 const keyMap = {
   createdat: 'createdAt',
   userid: 'userId',
@@ -65,238 +40,326 @@ const keyMap = {
 
 const mapRow = (row) => {
   if (!row) return row;
+
   const mapped = {};
+
   for (const key of Object.keys(row)) {
     const targetKey = keyMap[key.toLowerCase()] || key;
-    let val = row[key];
-    if (targetKey === 'count' && typeof val === 'string' && !isNaN(val)) {
-      val = parseInt(val, 10);
+
+    let value = row[key];
+
+    if (
+      targetKey === 'count' &&
+      typeof value === 'string' &&
+      !isNaN(value)
+    ) {
+      value = parseInt(value, 10);
     }
-    mapped[targetKey] = val;
+
+    mapped[targetKey] = value;
   }
+
   return mapped;
 };
 
-// Helper functions for async database operations
+// Run INSERT / UPDATE / DELETE queries
 export const runQuery = async (sql, params = []) => {
-  if (usePostgres && pool) {
-    const pgSql = convertPlaceholders(sql);
-    const res = await pool.query(pgSql, params);
-    return { lastID: null, changes: res.rowCount, rowCount: res.rowCount };
-  } else if (sqliteDb) {
-    return new Promise((resolve, reject) => {
-      sqliteDb.run(sql, params, function (err) {
-        if (err) return reject(err);
-        resolve({ lastID: this.lastID, changes: this.changes });
-      });
-    });
-  } else {
-    throw new Error('Database connection is not initialized.');
+  if (!pool) {
+    throw new Error('PostgreSQL database is not initialized.');
   }
+
+  const pgSql = convertPlaceholders(sql);
+
+  const result = await pool.query(pgSql, params);
+
+  return {
+    lastID: null,
+    changes: result.rowCount,
+    rowCount: result.rowCount
+  };
 };
 
+// Get one row
 export const getOne = async (sql, params = []) => {
-  if (usePostgres && pool) {
-    const pgSql = convertPlaceholders(sql);
-    const res = await pool.query(pgSql, params);
-    return res.rows.length > 0 ? mapRow(res.rows[0]) : null;
-  } else if (sqliteDb) {
-    return new Promise((resolve, reject) => {
-      sqliteDb.get(sql, params, (err, row) => {
-        if (err) return reject(err);
-        resolve(mapRow(row));
-      });
-    });
-  } else {
-    throw new Error('Database connection is not initialized.');
+  if (!pool) {
+    throw new Error('PostgreSQL database is not initialized.');
   }
+
+  const pgSql = convertPlaceholders(sql);
+
+  const result = await pool.query(pgSql, params);
+
+  return result.rows.length > 0
+    ? mapRow(result.rows[0])
+    : null;
 };
 
+// Get multiple rows
 export const getAll = async (sql, params = []) => {
-  if (usePostgres && pool) {
-    const pgSql = convertPlaceholders(sql);
-    const res = await pool.query(pgSql, params);
-    return res.rows.map(mapRow);
-  } else if (sqliteDb) {
-    return new Promise((resolve, reject) => {
-      sqliteDb.all(sql, params, (err, rows) => {
-        if (err) return reject(err);
-        resolve(rows ? rows.map(mapRow) : []);
-      });
-    });
-  } else {
-    throw new Error('Database connection is not initialized.');
+  if (!pool) {
+    throw new Error('PostgreSQL database is not initialized.');
   }
+
+  const pgSql = convertPlaceholders(sql);
+
+  const result = await pool.query(pgSql, params);
+
+  return result.rows.map(mapRow);
 };
 
+// Initialize PostgreSQL database
 export const initDb = async () => {
-  const rawUrl = process.env.DATABASE_URL;
-  if (rawUrl && !isPlaceholderUrl(rawUrl)) {
-    try {
-      const connectionString = getSanitizedUrl(rawUrl);
-      const isLocal = connectionString.includes('localhost') || connectionString.includes('127.0.0.1');
-      const testPool = new Pool({
-        connectionString,
-        ssl: isLocal ? false : { rejectUnauthorized: false },
-        connectionTimeoutMillis: 5000
-      });
-      await testPool.query('SELECT 1');
-      pool = testPool;
-      usePostgres = true;
-      console.log('PostgreSQL database connected successfully.');
-    } catch (err) {
-      console.warn('PostgreSQL connection failed. Falling back to SQLite database...');
-      usePostgres = false;
-    }
-  } else {
-    console.log('PostgreSQL DATABASE_URL contains placeholders or is not set. Using SQLite database...');
-    usePostgres = false;
+  const databaseUrl = process.env.DATABASE_URL;
+
+  if (!databaseUrl) {
+    throw new Error(
+      'DATABASE_URL is not set. Please add your Supabase PostgreSQL connection string.'
+    );
   }
 
-  if (!usePostgres) {
-    const sqlite = sqlite3.verbose();
-    await new Promise((resolve, reject) => {
-      sqliteDb = new sqlite.Database(dbPath, (err) => {
-        if (err) return reject(err);
-        resolve();
-      });
+  console.log('Connecting to PostgreSQL...');
+
+  try {
+    pool = new Pool({
+      connectionString: databaseUrl,
+      ssl: {
+        rejectUnauthorized: false
+      },
+      connectionTimeoutMillis: 10000
     });
-    console.log('Connected to SQLite database at:', dbPath);
-    await runQuery('PRAGMA foreign_keys = ON;');
+
+    await pool.query('SELECT NOW()');
+
+    console.log('PostgreSQL database connected successfully.');
+
+    // Enable foreign keys is automatic in PostgreSQL.
+    // PRAGMA foreign_keys = ON is SQLite-only and must NOT be used here.
+
+    // ============================================================
+    // USERS
+    // ============================================================
+
+    await runQuery(`
+      CREATE TABLE IF NOT EXISTS users (
+        id VARCHAR(255) PRIMARY KEY,
+        name TEXT NOT NULL,
+        email TEXT UNIQUE NOT NULL,
+        phone TEXT,
+        password TEXT NOT NULL,
+        address TEXT,
+        avatar TEXT,
+        createdAt TEXT NOT NULL
+      )
+    `);
+
+    // Add optional authentication columns if they don't exist
+    await runQuery(`
+      ALTER TABLE users
+      ADD COLUMN IF NOT EXISTS emailVerified INTEGER NOT NULL DEFAULT 1
+    `);
+
+    await runQuery(`
+      ALTER TABLE users
+      ADD COLUMN IF NOT EXISTS verificationTokenHash TEXT
+    `);
+
+    await runQuery(`
+      ALTER TABLE users
+      ADD COLUMN IF NOT EXISTS verificationTokenExpiresAt TEXT
+    `);
+
+    // ============================================================
+    // SERVICES
+    // ============================================================
+
+    await runQuery(`
+      CREATE TABLE IF NOT EXISTS services (
+        id VARCHAR(255) PRIMARY KEY,
+        name TEXT NOT NULL,
+        category TEXT NOT NULL,
+        iconName TEXT NOT NULL,
+        shortDescription TEXT NOT NULL,
+        fullDescription TEXT NOT NULL,
+        price INTEGER NOT NULL,
+        duration TEXT NOT NULL,
+        popular INTEGER DEFAULT 0,
+        rating REAL DEFAULT 5.0,
+        image TEXT NOT NULL
+      )
+    `);
+
+    // ============================================================
+    // PETS
+    // ============================================================
+
+    await runQuery(`
+      CREATE TABLE IF NOT EXISTS pets (
+        id VARCHAR(255) PRIMARY KEY,
+        userId VARCHAR(255) NOT NULL,
+        name TEXT NOT NULL,
+        type TEXT NOT NULL,
+        breed TEXT NOT NULL,
+        age TEXT NOT NULL,
+        gender TEXT NOT NULL,
+        weight TEXT NOT NULL,
+        vaccinationStatus TEXT NOT NULL,
+        image TEXT,
+        notes TEXT,
+        createdAt TEXT NOT NULL,
+        FOREIGN KEY (userId)
+          REFERENCES users(id)
+          ON DELETE CASCADE
+      )
+    `);
+
+    // ============================================================
+    // MARKETPLACE PETS
+    // ============================================================
+
+    await runQuery(`
+      CREATE TABLE IF NOT EXISTS marketplace_pets (
+        id VARCHAR(255) PRIMARY KEY,
+        title TEXT NOT NULL,
+        type TEXT NOT NULL,
+        breed TEXT NOT NULL,
+        age TEXT NOT NULL,
+        gender TEXT NOT NULL,
+        price INTEGER NOT NULL,
+        certified INTEGER DEFAULT 0,
+        vaccinated INTEGER DEFAULT 1,
+        location TEXT NOT NULL,
+        sellerName TEXT NOT NULL,
+        sellerId VARCHAR(255),
+        phone TEXT NOT NULL,
+        image TEXT NOT NULL,
+        description TEXT NOT NULL,
+        createdAt TEXT NOT NULL
+      )
+    `);
+
+    // ============================================================
+    // BOOKINGS
+    // ============================================================
+
+    await runQuery(`
+      CREATE TABLE IF NOT EXISTS bookings (
+        id VARCHAR(255) PRIMARY KEY,
+        userId VARCHAR(255) NOT NULL,
+        serviceId VARCHAR(255) NOT NULL,
+        serviceName TEXT NOT NULL,
+        petId VARCHAR(255) NOT NULL,
+        petName TEXT NOT NULL,
+        date TEXT NOT NULL,
+        time TEXT NOT NULL,
+        ownerName TEXT NOT NULL,
+        phone TEXT NOT NULL,
+        notes TEXT,
+        price INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        paymentStatus TEXT NOT NULL,
+        paymentMethod TEXT,
+        transactionId TEXT,
+        paidAt TEXT,
+        createdAt TEXT NOT NULL,
+        FOREIGN KEY (userId)
+          REFERENCES users(id)
+          ON DELETE CASCADE
+      )
+    `);
+
+    // ============================================================
+    // REMINDERS
+    // ============================================================
+
+    await runQuery(`
+      CREATE TABLE IF NOT EXISTS reminders (
+        id VARCHAR(255) PRIMARY KEY,
+        userId VARCHAR(255) NOT NULL,
+        petId VARCHAR(255) NOT NULL,
+        petName TEXT NOT NULL,
+        title TEXT NOT NULL,
+        type TEXT NOT NULL,
+        dueDate TEXT NOT NULL,
+        time TEXT NOT NULL,
+        status TEXT NOT NULL,
+        notes TEXT,
+        createdAt TEXT NOT NULL,
+        FOREIGN KEY (userId)
+          REFERENCES users(id)
+          ON DELETE CASCADE
+      )
+    `);
+
+    // ============================================================
+    // EMERGENCY CONTACTS
+    // ============================================================
+
+    await runQuery(`
+      CREATE TABLE IF NOT EXISTS emergency_contacts (
+        id VARCHAR(255) PRIMARY KEY,
+        name TEXT NOT NULL,
+        type TEXT NOT NULL,
+        phone TEXT NOT NULL,
+        address TEXT NOT NULL,
+        openHours TEXT NOT NULL,
+        distance TEXT NOT NULL
+      )
+    `);
+
+    // ============================================================
+    // INDEXES
+    // ============================================================
+
+    await runQuery(`
+      CREATE INDEX IF NOT EXISTS idx_pets_userId
+      ON pets(userId)
+    `);
+
+    await runQuery(`
+      CREATE INDEX IF NOT EXISTS idx_marketplace_sellerId
+      ON marketplace_pets(sellerId)
+    `);
+
+    await runQuery(`
+      CREATE INDEX IF NOT EXISTS idx_bookings_userId
+      ON bookings(userId)
+    `);
+
+    await runQuery(`
+      CREATE INDEX IF NOT EXISTS idx_bookings_petId
+      ON bookings(petId)
+    `);
+
+    await runQuery(`
+      CREATE INDEX IF NOT EXISTS idx_bookings_serviceId
+      ON bookings(serviceId)
+    `);
+
+    await runQuery(`
+      CREATE INDEX IF NOT EXISTS idx_reminders_userId
+      ON reminders(userId)
+    `);
+
+    await runQuery(`
+      CREATE INDEX IF NOT EXISTS idx_reminders_petId
+      ON reminders(petId)
+    `);
+
+    console.log('Database tables initialized successfully.');
+
+  } catch (error) {
+    console.error(
+      'PostgreSQL database initialization failed:',
+      error.message
+    );
+
+    if (pool) {
+      await pool.end().catch(() => {});
+      pool = null;
+    }
+
+    throw error;
   }
-
-  // Schema creation queries
-  const idType = usePostgres ? 'VARCHAR(255)' : 'TEXT';
-
-  await runQuery(`
-    CREATE TABLE IF NOT EXISTS users (
-      id ${idType} PRIMARY KEY,
-      name TEXT NOT NULL,
-      email TEXT UNIQUE NOT NULL,
-      phone TEXT,
-      password TEXT NOT NULL,
-      address TEXT,
-      avatar TEXT,
-      createdAt TEXT NOT NULL
-    )
-  `);
-
-  const userColumns = await getAll('PRAGMA table_info(users)');
-  const hasColumn = (name) => userColumns.some(column => column.name === name);
-  if (!hasColumn('emailVerified')) await runQuery('ALTER TABLE users ADD COLUMN emailVerified INTEGER NOT NULL DEFAULT 1');
-  if (!hasColumn('verificationTokenHash')) await runQuery('ALTER TABLE users ADD COLUMN verificationTokenHash TEXT');
-  if (!hasColumn('verificationTokenExpiresAt')) await runQuery('ALTER TABLE users ADD COLUMN verificationTokenExpiresAt TEXT');
-
-  await runQuery(`
-    CREATE TABLE IF NOT EXISTS services (
-      id ${idType} PRIMARY KEY,
-      name TEXT NOT NULL,
-      category TEXT NOT NULL,
-      iconName TEXT NOT NULL,
-      shortDescription TEXT NOT NULL,
-      fullDescription TEXT NOT NULL,
-      price INTEGER NOT NULL,
-      duration TEXT NOT NULL,
-      popular INTEGER DEFAULT 0,
-      rating REAL DEFAULT 5.0,
-      image TEXT NOT NULL
-    )
-  `);
-
-  await runQuery(`
-    CREATE TABLE IF NOT EXISTS pets (
-      id ${idType} PRIMARY KEY,
-      userId ${idType} NOT NULL,
-      name TEXT NOT NULL,
-      type TEXT NOT NULL,
-      breed TEXT NOT NULL,
-      age TEXT NOT NULL,
-      gender TEXT NOT NULL,
-      weight TEXT NOT NULL,
-      vaccinationStatus TEXT NOT NULL,
-      image TEXT,
-      notes TEXT,
-      createdAt TEXT NOT NULL,
-      FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE
-    )
-  `);
-
-  await runQuery(`
-    CREATE TABLE IF NOT EXISTS marketplace_pets (
-      id ${idType} PRIMARY KEY,
-      title TEXT NOT NULL,
-      type TEXT NOT NULL,
-      breed TEXT NOT NULL,
-      age TEXT NOT NULL,
-      gender TEXT NOT NULL,
-      price INTEGER NOT NULL,
-      certified INTEGER DEFAULT 0,
-      vaccinated INTEGER DEFAULT 1,
-      location TEXT NOT NULL,
-      sellerName TEXT NOT NULL,
-      sellerId ${idType},
-      phone TEXT NOT NULL,
-      image TEXT NOT NULL,
-      description TEXT NOT NULL,
-      createdAt TEXT NOT NULL
-    )
-  `);
-
-  await runQuery(`
-    CREATE TABLE IF NOT EXISTS bookings (
-      id ${idType} PRIMARY KEY,
-      userId ${idType} NOT NULL,
-      serviceId ${idType} NOT NULL,
-      serviceName TEXT NOT NULL,
-      petId ${idType} NOT NULL,
-      petName TEXT NOT NULL,
-      date TEXT NOT NULL,
-      time TEXT NOT NULL,
-      ownerName TEXT NOT NULL,
-      phone TEXT NOT NULL,
-      notes TEXT,
-      price INTEGER NOT NULL,
-      status TEXT NOT NULL,
-      paymentStatus TEXT NOT NULL,
-      paymentMethod TEXT,
-      transactionId TEXT,
-      paidAt TEXT,
-      createdAt TEXT NOT NULL,
-      FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE
-    )
-  `);
-
-  await runQuery(`
-    CREATE TABLE IF NOT EXISTS reminders (
-      id ${idType} PRIMARY KEY,
-      userId ${idType} NOT NULL,
-      petId ${idType} NOT NULL,
-      petName TEXT NOT NULL,
-      title TEXT NOT NULL,
-      type TEXT NOT NULL,
-      dueDate TEXT NOT NULL,
-      time TEXT NOT NULL,
-      status TEXT NOT NULL,
-      notes TEXT,
-      createdAt TEXT NOT NULL,
-      FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE
-    )
-  `);
-
-  await runQuery(`
-    CREATE TABLE IF NOT EXISTS emergency_contacts (
-      id ${idType} PRIMARY KEY,
-      name TEXT NOT NULL,
-      type TEXT NOT NULL,
-      phone TEXT NOT NULL,
-      address TEXT NOT NULL,
-      openHours TEXT NOT NULL,
-      distance TEXT NOT NULL
-    )
-  `);
-
-  console.log('Database tables initialized successfully.');
 };
 
 export default pool;
-
