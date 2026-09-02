@@ -1,19 +1,44 @@
+import swaggerJsdoc from 'swagger-jsdoc';
 import swaggerUi from 'swagger-ui-express';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import YAML from 'yaml';
 
-const docsPath = path.join(path.dirname(fileURLToPath(import.meta.url)), 'docs', 'openapi.yaml');
-const swaggerSpec = YAML.parse(fs.readFileSync(docsPath, 'utf8'));
-export const registerSwagger = (app, port = 3000) => {
-  swaggerSpec.servers = [
-    {
-      url: `http://localhost:${port}`,
-      description: 'Local development server'
-    }
-  ];
+const options = {
+  definition: {
+    openapi: '3.0.0',
+    info: {
+      title: 'Pet Care API',
+      version: '1.0.0',
+      description: 'Pet Care Backend API'
+    },
 
+    servers: [
+      {
+        url: 'http://localhost:5004'
+      }
+    ],
+
+    components: {
+      securitySchemes: {
+        bearerAuth: {
+          type: 'http',
+          scheme: 'bearer',
+          bearerFormat: 'JWT'
+        }
+      }
+    },
+
+    security: [
+      {
+        bearerAuth: []
+      }
+    ]
+  },
+
+  apis: ['./routes/*.js']
+};
+
+const swaggerSpec = swaggerJsdoc(options);
+
+export const registerSwagger = (app) => {
   app.get('/api-docs/openapi.json', (req, res) => {
     res.json(swaggerSpec);
   });
